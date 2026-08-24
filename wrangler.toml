@@ -1,7 +1,13 @@
 name = "flybase"
+account_id = "cbcec09aecf46fb093705f2080e078f7"
 main = "src/index.js"
 compatibility_date = "2026-08-24"
 compatibility_flags = ["nodejs_compat"]
+
+# Force the pure-JS S3 XML parser (the "browser" variant requires DOMParser,
+# which does not exist in the Workers runtime)
+[alias]
+"@aws-sdk/xml-builder" = "./shims/xml-builder.js"
 
 [assets]
 directory = "./public"
@@ -11,7 +17,7 @@ not_found_handling = "single-page-application"
 [vars]
 FILEBASE_ENDPOINT = "https://s3.filebase.com"
 FILEBASE_REGION = "us-east-1"
-FILEBASE_BUCKET = "flybase-demo"
+FILEBASE_BUCKET = "flybase-goutou566"
 
 # Sensitive values are configured as secrets, not in this file:
 #   wrangler secret put FILEBASE_ACCESS_KEY
