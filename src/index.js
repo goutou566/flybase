@@ -32,6 +32,12 @@ async function handleApi(request, url, env) {
     }
   }
 
+  if (request.method === 'PUT' || request.method === 'DELETE') {
+    if (!isAdmin(request, env)) {
+      return unauthorized();
+    }
+  }
+
   const match = path.match(/^\/api\/objects\/(.+)$/);
   if (!match) {
     return notFound();
@@ -95,6 +101,37 @@ function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+function isAdmin(request, env) {
+  const header = request.headers.get('authorization') || '';
+  if (!header.startsWith('Basic ')) {
+    return false;
+  }
+  const expected = 'admin:' + (env.ADMIN_PASSWORD || '');
+  try {
+    const decoded = atob(header.slice(6).trim());
+    if (decoded.length !== expected.length) {
+      return false;
+    }
+    let diff = 0;
+    for (let i = 0; i < decoded.length; i++) {
+      diff |= decoded.charCodeAt(i) ^ expected.charCodeAt(i);
+    }
+    return diff === 0;
+  } catch {
+    return false;
+  }
+}
+
+function unauthorized() {
+  return new Response(JSON.stringify({ error: 'Admin authentication required' }), {
+    status: 401,
+    headers: {
+      'Content-Type': 'application/json',
+      'WWW-Authenticate': 'Basic realm="flybase admin", charset="UTF-8"',
+    },
   });
 }
 

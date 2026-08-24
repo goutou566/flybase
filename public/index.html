@@ -146,14 +146,18 @@
 <body>
   <header>
     <div class="logo">fly<span>base</span></div>
-    <button class="ghost" id="refreshBtn">刷新</button>
+    <div style="display:flex;gap:8px">
+      <button class="ghost" id="adminBtn" style="display:none">管理员登录</button>
+      <button class="ghost" id="exitAdminBtn" style="display:none">退出管理</button>
+      <button class="ghost" id="refreshBtn">刷新</button>
+      <button id="uploadBtn">上传文件</button>
+    </div>
+    <input type="file" id="fileInput" multiple />
   </header>
 
   <main>
     <div class="toolbar">
       <div class="breadcrumb" id="breadcrumb"></div>
-      <button id="uploadBtn">上传文件</button>
-      <input type="file" id="fileInput" multiple />
     </div>
 
     <div class="progress" id="progress">
@@ -182,7 +186,38 @@
   <script>
     const state = {
       current: [], // folder path segments
+      admin: false,
+      authHeader: null,
     };
+
+    function enterAdmin() {
+      const pass = prompt('请输入管理员密码');
+      if (!pass) return;
+      state.admin = true;
+      state.authHeader = 'Basic ' + btoa('admin:' + pass);
+      applyAdminUi();
+      toast('管理员模式已开启');
+    }
+
+    function exitAdmin() {
+      state.admin = false;
+      state.authHeader = null;
+      applyAdminUi();
+    }
+
+    function applyAdminUi() {
+      $('uploadBtn').style.display = state.admin ? '' : 'none';
+      $('adminBtn').style.display = state.admin ? 'none' : '';
+      $('exitAdminBtn').style.display = state.admin ? '' : 'none';
+      loadFiles();
+    }
+
+    function authedFetch(url, options = {}) {
+      if (state.admin && state.authHeader) {
+        options.headers = { ...(options.headers || {}), Authorization: state.authHeader };
+      }
+      return fetch(url, options);
+    }
 
     const $ = (id) => document.getElementById(id);
     const fileInput = $('fileInput');
@@ -303,7 +338,7 @@
             <td><div class="actions">
               <button data-act="download">下载</button>
               <button data-act="share">分享</button>
-              <button data-act="delete" class="danger">删除</button>
+              ${state.admin ? '<button data-act="delete" class="danger">删除</button>' : ''}
             </div></td>`;
           tr.querySelector('.name span span').textContent = name;
           tr.querySelector('.name').addEventListener('click', () => {
@@ -324,17 +359,20 @@
               toast('生成分享链接失败');
             }
           });
-          actions.querySelector('[data-act=delete]').addEventListener('click', async () => {
-            if (!confirm(`确认删除「${name}」？`)) return;
-            try {
-              const res = await fetch(`/api/objects/${encodeKey(key)}`, { method: 'DELETE' });
-              if (!res.ok) throw new Error(await res.text());
-              toast('已删除');
-              loadFiles();
-            } catch {
-              toast('删除失败');
-            }
-          });
+          const delBtn = actions.querySelector('[data-act=delete]');
+          if (delBtn) {
+            delBtn.addEventListener('click', async () => {
+              if (!confirm(`确认删除「${name}」？`)) return;
+              try {
+                const res = await authedFetch(`/api/objects/${encodeKey(key)}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error(await res.text());
+                toast('已删除');
+                loadFiles();
+              } catch {
+                toast('删除失败');
+              }
+            });
+          }
           tbody.appendChild(tr);
         });
       } catch (err) {
@@ -355,7 +393,7 @@
         fill.style.width = '0%';
         text.textContent = `上传中 ${file.name}...`;
         try {
-          const res = await fetch(`/api/objects/${encodeKey(key)}`, {
+          const res = await authedFetch(`/api/objects/${encodeKey(key)}`, {
             method: 'PUT',
             body: file,
           });
@@ -373,12 +411,19 @@
 
     $('uploadBtn').addEventListener('click', () => fileInput.click());
     $('refreshBtn').addEventListener('click', loadFiles);
+    $('adminBtn') && $('adminBtn').addEventListener('click', enterAdmin);
+    $('exitAdminBtn') && $('exitAdminBtn').addEventListener('click', exitAdmin);
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) uploadFiles(e.target.files);
       e.target.value = '';
     });
 
-    loadFiles();
+    if (new URLSearchParams(location.search).has('admin')) {
+      enterAdmin();
+    } else {
+      applyAdminUi();
+      loadFiles();
+    }
   </script>
 </body>
 </html>
