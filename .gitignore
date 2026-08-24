@@ -111,6 +111,11 @@
 *.pem
 *.key
 
+# Cloudflare Workers / Wrangler
+**/.wrangler/
+**/.dev.vars
+**/wrangler.local.toml
+
 # Temporary files
 *.tmp
 *.temp

@@ -1,0 +1,19 @@
+{
+  "name": "flybase",
+  "version": "0.1.0",
+  "description": "A private cloud drive built on Cloudflare Workers and Filebase (S3-compatible decentralized object storage)",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "node --check src/index.js && node --check src/s3.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.650.0",
+    "@aws-sdk/s3-request-presigner": "^3.650.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0"
+  }
+}
