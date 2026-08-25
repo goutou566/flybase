@@ -5,6 +5,10 @@ import {
   getObject,
   deleteObject,
   createShareUrl,
+  createMultipartUpload,
+  presignUploadPart,
+  completeMultipartUpload,
+  abortMultipartUpload,
   toEnvKey,
 } from './s3.js';
 
@@ -32,10 +36,15 @@ async function handleApi(request, url, env) {
     }
   }
 
-  if (request.method === 'PUT' || request.method === 'DELETE') {
+  if (request.method === 'PUT' || request.method === 'DELETE' || request.method === 'POST') {
     if (!isAdmin(request, env)) {
       return unauthorized();
     }
+  }
+
+  const multipartMatch = path.match(/^\/api\/multipart\/(.+)$/);
+  if (multipartMatch) {
+    return handleMultipart(request, url, env, s3, bucket, toEnvKey(multipartMatch[1]));
   }
 
   const match = path.match(/^\/api\/objects\/(.+)$/);
@@ -94,6 +103,55 @@ async function handleApi(request, url, env) {
     }
     default:
       return new Response('Method not allowed', { status: 405 });
+  }
+}
+
+async function handleMultipart(request, url, env, s3, bucket, key) {
+  const action = url.searchParams.get('action');
+
+  try {
+    if (request.method === 'POST' && action === 'init') {
+      const contentType = request.headers.get('content-type') || 'application/octet-stream';
+      const uploadId = await createMultipartUpload(s3, bucket, key, contentType);
+      return json({ key, uploadId });
+    }
+
+    if (request.method === 'GET' && action === 'presign') {
+      const partNumber = parseInt(url.searchParams.get('partNumber'), 10);
+      if (!partNumber || partNumber < 1 || partNumber > 10000) {
+        return json({ error: 'partNumber must be 1-10000' }, 400);
+      }
+      const uploadId = url.searchParams.get('uploadId');
+      if (!uploadId) {
+        return json({ error: 'uploadId required' }, 400);
+      }
+      const presignedUrl = await presignUploadPart(s3, bucket, key, uploadId, partNumber);
+      return json({ key, uploadId, partNumber, presignedUrl });
+    }
+
+    if (request.method === 'POST' && action === 'complete') {
+      const body = await request.json();
+      const { uploadId, parts } = body;
+      if (!uploadId || !Array.isArray(parts) || parts.length === 0) {
+        return json({ error: 'uploadId and parts are required' }, 400);
+      }
+      await completeMultipartUpload(s3, bucket, key, uploadId, parts);
+      return json({ ok: true, key });
+    }
+
+    if (request.method === 'POST' && action === 'abort') {
+      const body = await request.json();
+      const { uploadId } = body;
+      if (!uploadId) {
+        return json({ error: 'uploadId required' }, 400);
+      }
+      await abortMultipartUpload(s3, bucket, key, uploadId);
+      return json({ ok: true, aborted: true });
+    }
+
+    return json({ error: 'Unknown multipart action' }, 400);
+  } catch (err) {
+    return serverError(err);
   }
 }
 

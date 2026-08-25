@@ -4,6 +4,10 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -65,4 +69,49 @@ export async function createShareUrl(s3, bucket, key, expiresInSeconds) {
     expiresIn: expiresInSeconds || 3600,
   });
   return url;
+}
+
+export async function createMultipartUpload(s3, bucket, key, contentType) {
+  const command = new CreateMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: contentType || 'application/octet-stream',
+  });
+  const res = await s3.send(command);
+  return res.UploadId;
+}
+
+export async function presignUploadPart(s3, bucket, key, uploadId, partNumber) {
+  const command = new UploadPartCommand({
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+  });
+  return getSignedUrl(s3, command, { expiresIn: 6 * 3600 });
+}
+
+export async function completeMultipartUpload(s3, bucket, key, uploadId, parts) {
+  const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+  const command = new CompleteMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: {
+      Parts: sorted.map((p) => ({
+        PartNumber: p.partNumber,
+        ETag: p.etag,
+      })),
+    },
+  });
+  return s3.send(command);
+}
+
+export async function abortMultipartUpload(s3, bucket, key, uploadId) {
+  const command = new AbortMultipartUploadCommand({
+    Bucket: bucket,
+    Key: key,
+    UploadId: uploadId,
+  });
+  return s3.send(command);
 }

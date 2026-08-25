@@ -449,6 +449,115 @@
       return formatSize(n);
     }
 
+    const MULTIPART_THRESHOLD = 32 * 1024 * 1024; // 32MB 以上走分片直传
+    const PART_SIZE = 8 * 1024 * 1024;            // 每片 8MB
+    const PART_CONCURRENCY = 3;
+
+    async function mpRequest(path, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (state.admin && state.authHeader) {
+        headers.Authorization = state.authHeader;
+      }
+      const res = await fetch(path, { ...options, headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    async function uploadPartWithRetry(presignPath, blob, onPartProgress, maxRetries = 3) {
+      let lastErr;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          return await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('PUT', presignPath);
+            xhr.upload.addEventListener('progress', (e) => {
+              if (e.lengthComputable) onPartProgress(e.loaded);
+            });
+            xhr.addEventListener('load', () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve(xhr.getResponseHeader('ETag') || '');
+              } else {
+                reject(new Error(`HTTP ${xhr.status}`));
+              }
+            });
+            xhr.addEventListener('error', () => reject(new Error('网络错误')));
+            xhr.addEventListener('timeout', () => reject(new Error('超时')));
+            xhr.send(blob);
+          });
+        } catch (err) {
+          lastErr = err;
+          if (attempt < maxRetries) {
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          }
+        }
+      }
+      throw lastErr;
+    }
+
+    async function uploadMultipart(file, key, onProgress, onNote, signalRef) {
+      const init = await mpRequest(`/api/multipart/${encodeKey(key)}?action=init`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      });
+      signalRef.abort = async () => {
+        try {
+          await mpRequest(`/api/multipart/${encodeKey(key)}?action=abort`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ uploadId: init.uploadId }),
+          });
+        } catch {}
+      };
+
+      const totalParts = Math.ceil(file.size / PART_SIZE);
+      const parts = new Array(totalParts).fill(null);
+      let completedBytes = 0;
+      const partLoaded = new Array(totalParts).fill(0);
+
+      const updateTotal = () => onProgress(completedBytes + partLoaded.reduce((a, b) => a + b, 0), file.size);
+
+      const worker = async (queue) => {
+        while (queue.length) {
+          const i = queue.shift();
+          const start = i * PART_SIZE;
+          const blob = file.slice(start, Math.min(start + PART_SIZE, file.size));
+          try {
+            const { presignedUrl } = await mpRequest(
+              `/api/multipart/${encodeKey(key)}?action=presign&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${i + 1}`
+            );
+            const etag = await uploadPartWithRetry(presignedUrl, blob, (loaded) => {
+              partLoaded[i] = loaded;
+              updateTotal();
+            });
+            parts[i] = { partNumber: i + 1, etag };
+            partLoaded[i] = blob.size;
+            completedBytes += blob.size;
+            partLoaded[i] = 0;
+            updateTotal();
+          } catch (err) {
+            if (signalRef.abort) await signalRef.abort();
+            throw new Error(`第 ${i + 1} 片上传失败: ${err.message}`);
+          }
+        }
+      };
+
+      const queue = Array.from({ length: totalParts }, (_, i) => i);
+      await Promise.all(
+        Array.from({ length: Math.min(PART_CONCURRENCY, totalParts) }, () => worker(queue))
+      );
+
+      onNote?.('正在合并分片...');
+      await mpRequest(`/api/multipart/${encodeKey(key)}?action=complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uploadId: init.uploadId,
+          parts: parts.filter(Boolean),
+        }),
+      });
+    }
+
     async function uploadFiles(files) {
       const list = Array.from(files);
       const progress = $('progress');
@@ -465,7 +574,8 @@
             <span class="pct">0%</span>
           </div>
           <div class="bar"><div></div></div>`;
-        el.querySelector('.fname').textContent = `${file.name}（${formatBytes(file.size)}）`;
+        el.querySelector('.fname').textContent =
+          `${file.name}（${formatBytes(file.size)}${file.size > MULTIPART_THRESHOLD ? '，分片直传' : ''}）`;
         listBox.appendChild(el);
         return { file, el };
       });
@@ -477,19 +587,25 @@
         const key = currentPrefix() + file.name;
         const fill = el.querySelector('.bar > div');
         const pct = el.querySelector('.pct');
+        const signalRef = {};
+        const showProgress = (loaded, total, note) => {
+          if (note) {
+            pct.textContent = note;
+            fill.style.width = '100%';
+            fill.style.opacity = '0.3';
+            return;
+          }
+          const p = total ? Math.round((loaded / total) * 100) : 0;
+          fill.style.width = `${p}%`;
+          fill.style.opacity = '';
+          pct.textContent = `${formatBytes(loaded)} / ${formatBytes(total)}`;
+        };
         try {
-          await uploadWithRetry(file, key, (loaded, total, note) => {
-            if (note) {
-              pct.textContent = note;
-              fill.style.width = '100%';
-              fill.style.opacity = '0.3';
-              return;
-            }
-            const p = total ? Math.round((loaded / total) * 100) : 0;
-            fill.style.width = `${p}%`;
-            fill.style.opacity = '';
-            pct.textContent = `${formatBytes(loaded)} / ${formatBytes(total)}`;
-          });
+          if (file.size > MULTIPART_THRESHOLD) {
+            await uploadMultipart(file, key, showProgress, (note) => showProgress(0, 0, note), signalRef);
+          } else {
+            await uploadWithRetry(file, key, showProgress);
+          }
           fill.style.width = '100%';
           pct.textContent = '完成';
           pct.classList.add('ok');
