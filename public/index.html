@@ -474,7 +474,7 @@
       renderBreadcrumb();
       const prefix = currentPrefix();
       try {
-        const res = await fetch(`/api/objects?prefix=${encodeURIComponent(prefix)}`);
+        const res = await fetch(`/api/objects?prefix=${encodeURIComponent(prefix)}&_=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) throw new Error(await res.text());
         const { objects } = await res.json();
 
