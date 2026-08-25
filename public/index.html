@@ -165,6 +165,8 @@
       transition: width 0.15s linear;
     }
     .progress p { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    #downloadLogBtn { display: none; margin-top: 10px; font-size: 12px; padding: 6px 12px; }
+    #downloadLogBtn.show { display: inline-block; }
   </style>
 </head>
 <body>
@@ -187,6 +189,7 @@
     <div class="progress" id="progress">
       <div class="progress-list" id="progressList"></div>
       <p id="progressText"></p>
+      <button class="ghost" id="downloadLogBtn" style="display:none">下载失败日志</button>
     </div>
 
     <div class="card">
@@ -540,12 +543,46 @@
           lastErr = err;
           if (attempt < maxRetries) {
             const waitMs = 1500 * (attempt + 1);
+            pushLog(`${file.name} 第 ${attempt + 1} 次尝试失败（${waitMs / 1000}s 后重试）: ${err.message}`);
             onProgress(0, file.size, `重试 ${attempt + 1}/${maxRetries}（${waitMs / 1000}s 后）`);
             await new Promise((r) => setTimeout(r, waitMs));
           }
         }
       }
       throw lastErr;
+    }
+
+    // ---- 失败日志 ----
+    const uploadLogEntries = [];
+
+    function pushLog(msg) {
+      uploadLogEntries.push(`[${new Date().toISOString()}] ${msg}`);
+    }
+
+    function buildLogText() {
+      const lines = [
+        'flybase 上传日志',
+        `时间: ${new Date().toISOString()}`,
+        `页面: ${location.href}`,
+        `浏览器: ${navigator.userAgent}`,
+        `配置: 分片阈值 ${formatBytes(MULTIPART_THRESHOLD)} / 片大小 ${formatBytes(PART_SIZE)} / 分片并发 ${PART_CONCURRENCY}`,
+        '='.repeat(60),
+        ...uploadLogEntries,
+      ];
+      return lines.join('\n');
+    }
+
+    function downloadUploadLog() {
+      const blob = new Blob([buildLogText()], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+      a.href = url;
+      a.download = `flybase-upload-log-${ts}.log`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
 
     function formatBytes(n) {
@@ -568,7 +605,7 @@
       return data;
     }
 
-    async function uploadPartWithRetry(presignPath, blob, onPartProgress, maxRetries = 4) {
+    async function uploadPartWithRetry(presignPath, blob, onPartProgress, maxRetries = 4, label = '') {
       let lastErr;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
@@ -593,6 +630,7 @@
           lastErr = err;
           if (attempt < maxRetries) {
             const waitMs = 1000 * Math.pow(2, attempt);
+            pushLog(`${label} 第 ${attempt + 1} 次尝试失败（${waitMs / 1000}s 后重试）: ${err.message}`);
             onPartProgress(0);
             await new Promise((r) => setTimeout(r, waitMs));
           }
@@ -635,13 +673,14 @@
             const etag = await uploadPartWithRetry(presignedUrl, blob, (loaded) => {
               partLoaded[i] = loaded;
               updateTotal();
-            });
+            }, 4, `${file.name} 第 ${i + 1}/${totalParts} 片`);
             parts[i] = { partNumber: i + 1, etag };
             partLoaded[i] = blob.size;
             completedBytes += blob.size;
             partLoaded[i] = 0;
             updateTotal();
           } catch (err) {
+            pushLog(`${file.name} 第 ${i + 1} 片最终失败，已中止整个上传: ${err.message}`);
             if (signalRef.abort) await signalRef.abort();
             throw new Error(`第 ${i + 1} 片上传失败: ${err.message}`);
           }
@@ -669,7 +708,11 @@
       const progress = $('progress');
       const listBox = $('progressList');
       const text = $('progressText');
+      const logBtn = $('downloadLogBtn');
       progress.classList.add('show');
+      logBtn.classList.remove('show');
+      uploadLogEntries.length = 0;
+      pushLog(`开始上传批次，共 ${list.length} 个文件`);
 
       const items = list.map((file) => {
         const el = document.createElement('div');
@@ -708,6 +751,7 @@
           pct.textContent = `${formatBytes(loaded)} / ${formatBytes(total)}`;
         };
         try {
+          pushLog(`—— 开始上传 ${file.name}（${formatBytes(file.size)}，${file.size > MULTIPART_THRESHOLD ? '分片直传' : 'Worker 中转'}）`);
           if (file.size > MULTIPART_THRESHOLD) {
             await uploadMultipart(file, key, showProgress, (note) => showProgress(0, 0, note), signalRef);
           } else {
@@ -717,23 +761,27 @@
           pct.textContent = '完成';
           pct.classList.add('ok');
           okCount++;
+          pushLog(`${file.name} 上传成功`);
         } catch (err) {
           el.classList.add('failed');
           pct.textContent = '失败: ' + (err.message || '未知错误').slice(0, 80);
           pct.classList.add('err');
           failNames.push(file.name);
+          pushLog(`${file.name} 上传失败: ${err.message || '未知错误'}`);
         }
       }
 
       if (failNames.length === 0) {
         text.textContent = `全部完成（${okCount} 个文件）`;
+        setTimeout(() => {
+          progress.classList.remove('show');
+          listBox.innerHTML = '';
+          logBtn.classList.remove('show');
+        }, 4000);
       } else {
         text.textContent = `成功 ${okCount}/${list.length}，失败：${failNames.join('、')}`;
+        logBtn.classList.add('show');
       }
-      setTimeout(() => {
-        progress.classList.remove('show');
-        listBox.innerHTML = '';
-      }, 4000);
       loadFiles();
     }
 
@@ -741,6 +789,7 @@
     $('refreshBtn').addEventListener('click', loadFiles);
     $('passkeyBtn').addEventListener('click', onPasskeyBtn);
     $('logoutBtn').addEventListener('click', exitAdmin);
+    $('downloadLogBtn').addEventListener('click', downloadUploadLog);
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) uploadFiles(e.target.files);
       e.target.value = '';
