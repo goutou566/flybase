@@ -525,7 +525,7 @@
           const key = obj.key;
           const name = nameOf(key);
           tr.innerHTML = `
-            <td><span class="name">${ICON}<span></span></span></td>
+            <td><span class="name">${ICON}<span class="fname"></span></span></td>
             <td class="size">${formatSize(obj.size)}</td>
             <td class="date">${formatDate(obj.lastModified)}</td>
             <td><div class="actions">
@@ -533,7 +533,7 @@
               <button data-act="share">分享</button>
               ${state.admin ? '<button data-act="delete" class="danger">删除</button>' : ''}
             </div></td>`;
-          tr.querySelector('.name span span').textContent = name;
+          tr.querySelector('.fname').textContent = name;
           tr.querySelector('.name').addEventListener('click', () => {
             window.open(`/api/objects/${encodeKey(key)}`, '_blank');
           });
