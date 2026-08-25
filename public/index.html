@@ -167,6 +167,56 @@
     .progress p { font-size: 12px; color: var(--muted); margin-top: 8px; }
     #downloadLogBtn { display: none; margin-top: 10px; font-size: 12px; padding: 6px 12px; }
     #downloadLogBtn.show { display: inline-block; }
+    .log-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .log-modal.show { display: flex; }
+    .log-panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 100%;
+      max-width: 720px;
+      max-height: 80vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .log-panel header {
+      position: static;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .log-panel pre {
+      margin: 0;
+      padding: 16px 18px;
+      overflow: auto;
+      flex: 1;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--muted);
+      white-space: pre-wrap;
+      word-break: break-all;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .log-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      padding: 12px 18px;
+      border-top: 1px solid var(--border);
+    }
   </style>
 </head>
 <body>
@@ -209,6 +259,19 @@
   </main>
 
   <div class="toast" id="toast"></div>
+
+  <div class="log-modal" id="logModal">
+    <div class="log-panel">
+      <header>
+        <span>本次上传日志</span>
+        <button class="ghost" id="logCloseBtn" style="padding:4px 10px;font-size:12px">关闭</button>
+      </header>
+      <pre id="logContent"></pre>
+      <div class="log-actions">
+        <button class="ghost" id="logDownloadBtn">下载日志文件</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module">
     import { startRegistration, startAuthentication, browserSupportsWebAuthn } from './vendor/simplewebauthn/esm/index.js';
@@ -782,7 +845,18 @@
         text.textContent = `成功 ${okCount}/${list.length}，失败：${failNames.join('、')}`;
         logBtn.classList.add('show');
       }
+      pushLog(`批次结束：成功 ${okCount}/${list.length}`);
+      showLogModal();
       loadFiles();
+    }
+
+    function showLogModal() {
+      $('logContent').textContent = buildLogText();
+      $('logModal').classList.add('show');
+    }
+
+    function hideLogModal() {
+      $('logModal').classList.remove('show');
     }
 
     $('uploadBtn').addEventListener('click', () => fileInput.click());
@@ -790,6 +864,11 @@
     $('passkeyBtn').addEventListener('click', onPasskeyBtn);
     $('logoutBtn').addEventListener('click', exitAdmin);
     $('downloadLogBtn').addEventListener('click', downloadUploadLog);
+    $('logCloseBtn').addEventListener('click', hideLogModal);
+    $('logDownloadBtn').addEventListener('click', downloadUploadLog);
+    $('logModal').addEventListener('click', (e) => {
+      if (e.target === $('logModal')) hideLogModal();
+    });
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) uploadFiles(e.target.files);
       e.target.value = '';
