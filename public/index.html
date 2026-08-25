@@ -171,8 +171,8 @@
   <header>
     <div class="logo">fly<span>base</span></div>
     <div style="display:flex;gap:8px">
-      <button class="ghost" id="adminBtn" style="display:none">管理员登录</button>
-      <button class="ghost" id="exitAdminBtn" style="display:none">退出管理</button>
+      <button class="ghost" id="passkeyBtn" style="display:none">Passkey 登录</button>
+      <button class="ghost" id="logoutBtn" style="display:none">退出登录</button>
       <button class="ghost" id="refreshBtn">刷新</button>
       <button id="uploadBtn">上传文件</button>
     </div>
@@ -207,40 +207,143 @@
 
   <div class="toast" id="toast"></div>
 
-  <script>
+  <script type="module">
+    import { startRegistration, startAuthentication, browserSupportsWebAuthn } from './vendor/simplewebauthn/esm/index.js';
+
+    const SESSION_KEY = 'flybase_session';
+
     const state = {
       current: [], // folder path segments
       admin: false,
-      authHeader: null,
+      session: localStorage.getItem(SESSION_KEY),
+      passkeyRegistered: false,
     };
 
-    function enterAdmin() {
-      const pass = prompt('请输入管理员密码');
-      if (!pass) return;
-      state.admin = true;
-      state.authHeader = 'Basic ' + btoa('admin:' + pass);
-      applyAdminUi();
-      toast('管理员模式已开启');
+    function saveSession(token) {
+      state.session = token;
+      if (token) {
+        localStorage.setItem(SESSION_KEY, token);
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
     }
 
-    function exitAdmin() {
-      state.admin = false;
-      state.authHeader = null;
-      applyAdminUi();
+    async function fetchPasskeyStatus() {
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        state.passkeyRegistered = !!data.registered;
+        return data;
+      } catch {
+        state.passkeyRegistered = false;
+        return { registered: false };
+      }
     }
 
     function applyAdminUi() {
       $('uploadBtn').style.display = state.admin ? '' : 'none';
-      $('adminBtn').style.display = state.admin ? 'none' : '';
-      $('exitAdminBtn').style.display = state.admin ? '' : 'none';
+      $('passkeyBtn').style.display = state.admin ? 'none' : '';
+      $('passkeyBtn').textContent = state.passkeyRegistered ? 'Passkey 登录' : '注册 Passkey';
+      $('logoutBtn').style.display = state.admin ? '' : 'none';
       loadFiles();
     }
 
-    function authedFetch(url, options = {}) {
-      if (state.admin && state.authHeader) {
-        options.headers = { ...(options.headers || {}), Authorization: state.authHeader };
+    function authHeaders(extra = {}) {
+      const headers = { ...extra };
+      if (state.admin && state.session) {
+        headers.Authorization = 'Bearer ' + state.session;
       }
+      return headers;
+    }
+
+    function authedFetch(url, options = {}) {
+      options.headers = authHeaders(options.headers);
       return fetch(url, options);
+    }
+
+    function handleAuthLost() {
+      saveSession(null);
+      state.admin = false;
+      applyAdminUi();
+      toast('会话已过期，请重新登录');
+    }
+
+    async function registerPasskey() {
+      if (!browserSupportsWebAuthn()) {
+        toast('此浏览器不支持 Passkey');
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/register/options');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const attResp = await startRegistration({ optionsJSON: data.options });
+        const verifyRes = await fetch('/api/auth/register/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(attResp),
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyRes.ok) throw new Error(verifyData.error || `HTTP ${verifyRes.status}`);
+        toast('Passkey 注册成功，请登录');
+        state.passkeyRegistered = true;
+        applyAdminUi();
+        loginWithPasskey();
+      } catch (err) {
+        toast('注册失败: ' + (err.message || err.name || '未知错误'));
+      }
+    }
+
+    async function loginWithPasskey() {
+      if (!browserSupportsWebAuthn()) {
+        toast('此浏览器不支持 Passkey');
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/login/options');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const attResp = await startAuthentication({ optionsJSON: data.options });
+        const verifyRes = await fetch('/api/auth/login/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(attResp),
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyRes.ok) throw new Error(verifyData.error || `HTTP ${verifyRes.status}`);
+        saveSession(verifyData.sessionToken);
+        state.admin = true;
+        applyAdminUi();
+        toast('已通过 Passkey 登录');
+      } catch (err) {
+        if (err.name === 'NotAllowedError') {
+          toast('已取消登录');
+        } else {
+          toast('登录失败: ' + (err.message || err.name || '未知错误'));
+        }
+      }
+    }
+
+    async function exitAdmin() {
+      try {
+        if (state.session) {
+          await fetch('/api/auth/logout', {
+            method: 'POST',
+            headers: authHeaders(),
+          });
+        }
+      } catch {}
+      saveSession(null);
+      state.admin = false;
+      applyAdminUi();
+    }
+
+    function onPasskeyBtn() {
+      if (state.passkeyRegistered) {
+        loginWithPasskey();
+      } else {
+        registerPasskey();
+      }
     }
 
     const $ = (id) => document.getElementById(id);
@@ -408,8 +511,8 @@
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('PUT', `/api/objects/${encodeKey(key)}`);
-        if (state.admin && state.authHeader) {
-          xhr.setRequestHeader('Authorization', state.authHeader);
+        if (state.admin && state.session) {
+          xhr.setRequestHeader('Authorization', 'Bearer ' + state.session);
         }
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable) onProgress(e.loaded, e.total);
@@ -454,12 +557,13 @@
     const PART_CONCURRENCY = 3;
 
     async function mpRequest(path, options = {}) {
-      const headers = { ...(options.headers || {}) };
-      if (state.admin && state.authHeader) {
-        headers.Authorization = state.authHeader;
-      }
+      const headers = authHeaders(options.headers);
       const res = await fetch(path, { ...options, headers });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        handleAuthLost();
+        throw new Error('登录已过期');
+      }
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
     }
@@ -632,19 +736,21 @@
 
     $('uploadBtn').addEventListener('click', () => fileInput.click());
     $('refreshBtn').addEventListener('click', loadFiles);
-    $('adminBtn') && $('adminBtn').addEventListener('click', enterAdmin);
-    $('exitAdminBtn') && $('exitAdminBtn').addEventListener('click', exitAdmin);
+    $('passkeyBtn').addEventListener('click', onPasskeyBtn);
+    $('logoutBtn').addEventListener('click', exitAdmin);
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) uploadFiles(e.target.files);
       e.target.value = '';
     });
 
-    if (new URLSearchParams(location.search).has('admin')) {
-      enterAdmin();
-    } else {
+    async function init() {
+      await fetchPasskeyStatus();
+      state.admin = !!state.session;
       applyAdminUi();
       loadFiles();
     }
+
+    init();
   </script>
 </body>
 </html>

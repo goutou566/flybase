@@ -14,6 +14,10 @@ directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
 
+[[kv_namespaces]]
+binding = "PASSKEY_KV"
+id = "72ff461a6bf54715a347631655610541"
+
 [vars]
 FILEBASE_ENDPOINT = "https://s3.filebase.com"
 FILEBASE_REGION = "us-east-1"

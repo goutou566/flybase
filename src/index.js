@@ -11,6 +11,16 @@ import {
   abortMultipartUpload,
   toEnvKey,
 } from './s3.js';
+import {
+  beginRegistration,
+  finishRegistration,
+  beginLogin,
+  finishLogin,
+  verifySession,
+  logout,
+  deletePasskey,
+  passkeyStatus,
+} from './passkey.js';
 
 export default {
   async fetch(request, env) {
@@ -36,8 +46,13 @@ async function handleApi(request, url, env) {
     }
   }
 
+  const passkeyResponse = await handlePasskeyRoutes(request, url, env);
+  if (passkeyResponse) {
+    return passkeyResponse;
+  }
+
   if (request.method === 'PUT' || request.method === 'DELETE' || request.method === 'POST') {
-    if (!isAdmin(request, env)) {
+    if (!(await verifySession(request, env))) {
       return unauthorized();
     }
   }
@@ -155,6 +170,56 @@ async function handleMultipart(request, url, env, s3, bucket, key) {
   }
 }
 
+async function handlePasskeyRoutes(request, url, env) {
+  const path = url.pathname;
+
+  if (!path.startsWith('/api/auth/')) {
+    return null;
+  }
+
+  if (path === '/api/auth/status' && request.method === 'GET') {
+    return json(await passkeyStatus(env));
+  }
+
+  const isWrite = request.method === 'POST' || request.method === 'DELETE';
+
+  if (path === '/api/auth/register/options' && request.method === 'GET') {
+    const result = await beginRegistration(request, env);
+    return result.error ? json({ error: result.error }, result.status) : json(result);
+  }
+
+  if (path === '/api/auth/register/verify' && request.method === 'POST') {
+    const result = await finishRegistration(request, env);
+    return result.error ? json({ error: result.error }, result.status) : json(result);
+  }
+
+  if (isWrite && path !== '/api/auth/login/options' && path !== '/api/auth/login/verify') {
+    if (!(await verifySession(request, env))) {
+      return unauthorized();
+    }
+  }
+
+  if (path === '/api/auth/login/options' && request.method === 'GET') {
+    const result = await beginLogin(request, env);
+    return result.error ? json({ error: result.error }, result.status) : json(result);
+  }
+
+  if (path === '/api/auth/login/verify' && request.method === 'POST') {
+    const result = await finishLogin(request, env);
+    return result.error ? json({ error: result.error }, result.status) : json(result);
+  }
+
+  if (path === '/api/auth/logout' && request.method === 'POST') {
+    return json(await logout(request, env));
+  }
+
+  if (path === '/api/auth/passkey' && request.method === 'DELETE') {
+    return json(await deletePasskey(request, env));
+  }
+
+  return notFound();
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -162,34 +227,10 @@ function json(data, status = 200) {
   });
 }
 
-function isAdmin(request, env) {
-  const header = request.headers.get('authorization') || '';
-  if (!header.startsWith('Basic ')) {
-    return false;
-  }
-  const expected = 'admin:' + (env.ADMIN_PASSWORD || '');
-  try {
-    const decoded = atob(header.slice(6).trim());
-    if (decoded.length !== expected.length) {
-      return false;
-    }
-    let diff = 0;
-    for (let i = 0; i < decoded.length; i++) {
-      diff |= decoded.charCodeAt(i) ^ expected.charCodeAt(i);
-    }
-    return diff === 0;
-  } catch {
-    return false;
-  }
-}
-
 function unauthorized() {
   return new Response(JSON.stringify({ error: 'Admin authentication required' }), {
     status: 401,
-    headers: {
-      'Content-Type': 'application/json',
-      'WWW-Authenticate': 'Basic realm="flybase admin", charset="UTF-8"',
-    },
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 
