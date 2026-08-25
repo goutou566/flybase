@@ -273,6 +273,23 @@
     </div>
   </div>
 
+  <div class="log-modal" id="shareModal">
+    <div class="log-panel" style="max-width:560px">
+      <header>
+        <span>分享链接</span>
+        <button class="ghost" id="shareCloseBtn" style="padding:4px 10px;font-size:12px">关闭</button>
+      </header>
+      <div style="padding:16px 18px">
+        <input id="shareUrlInput" readonly
+          style="width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:12px" />
+        <p style="font-size:12px;color:var(--muted);margin-top:8px">链接已生成，24 小时内有效。点击「复制」或手动拷贝。</p>
+      </div>
+      <div class="log-actions">
+        <button id="shareCopyBtn">复制链接</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module">
     import { startRegistration, startAuthentication, browserSupportsWebAuthn } from './vendor/simplewebauthn/esm/index.js';
 
@@ -539,17 +556,16 @@
           });
           const actions = tr.querySelector('.actions');
           actions.querySelector('[data-act=download]').addEventListener('click', () => {
-            window.open(`/api/objects/${encodeKey(key)}`, '_blank');
+            location.assign(`/api/objects/${encodeKey(key)}?dl=1`);
           });
           actions.querySelector('[data-act=share]').addEventListener('click', async () => {
             try {
               const res = await fetch(`/api/objects/${encodeKey(key)}/share?expires=86400`);
               if (!res.ok) throw new Error(await res.text());
               const { shareUrl } = await res.json();
-              await navigator.clipboard.writeText(shareUrl);
-              toast('分享链接已复制（24 小时有效）');
-            } catch {
-              toast('生成分享链接失败');
+              openShareModal(shareUrl);
+            } catch (err) {
+              toast('生成分享链接失败: ' + (err.message || '').slice(0, 60));
             }
           });
           const delBtn = actions.querySelector('[data-act=delete]');
@@ -859,6 +875,39 @@
       $('logModal').classList.remove('show');
     }
 
+    let currentShareUrl = '';
+
+    function openShareModal(url) {
+      currentShareUrl = url;
+      const input = $('shareUrlInput');
+      input.value = url;
+      $('shareModal').classList.add('show');
+      input.focus();
+      input.select();
+    }
+
+    async function copyShareLink() {
+      const input = $('shareUrlInput');
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(currentShareUrl);
+        copied = true;
+      } catch {}
+      if (!copied) {
+        input.focus();
+        input.select();
+        try {
+          copied = document.execCommand('copy');
+        } catch {}
+      }
+      toast(copied ? '分享链接已复制（24 小时有效）' : '自动复制失败，请手动拷贝');
+      if (copied) hideShareModal();
+    }
+
+    function hideShareModal() {
+      $('shareModal').classList.remove('show');
+    }
+
     $('uploadBtn').addEventListener('click', () => fileInput.click());
     $('refreshBtn').addEventListener('click', loadFiles);
     $('passkeyBtn').addEventListener('click', onPasskeyBtn);
@@ -868,6 +917,11 @@
     $('logDownloadBtn').addEventListener('click', downloadUploadLog);
     $('logModal').addEventListener('click', (e) => {
       if (e.target === $('logModal')) hideLogModal();
+    });
+    $('shareCopyBtn').addEventListener('click', copyShareLink);
+    $('shareCloseBtn').addEventListener('click', hideShareModal);
+    $('shareModal').addEventListener('click', (e) => {
+      if (e.target === $('shareModal')) hideShareModal();
     });
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length) uploadFiles(e.target.files);

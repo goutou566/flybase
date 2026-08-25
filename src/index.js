@@ -95,11 +95,17 @@ async function handleApi(request, url, env) {
     }
     case 'GET': {
       try {
+        const forceDownload = url.searchParams.has('dl');
         const obj = await getObject(s3, bucket, key);
         const headers = new Headers();
         headers.set('Content-Type', obj.ContentType || 'application/octet-stream');
         const name = key.split('/').pop() || 'file';
-        headers.set('Content-Disposition', `inline; filename="${name.replace(/"/g, '')}"`);
+        const type = obj.ContentType || '';
+        const inlinePreview = !forceDownload && /^(image\/|application\/pdf|text\/)/.test(type);
+        headers.set(
+          'Content-Disposition',
+          `${inlinePreview ? 'inline' : 'attachment'}; filename="${name.replace(/"/g, '')}"`
+        );
         if (obj.ContentLength) {
           headers.set('Content-Length', String(obj.ContentLength));
         }
