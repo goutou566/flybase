@@ -552,11 +552,22 @@
             </div></td>`;
           tr.querySelector('.fname').textContent = name;
           tr.querySelector('.name').addEventListener('click', () => {
-            window.open(`/api/objects/${encodeKey(key)}`, '_blank');
+            const a = document.createElement('a');
+            a.href = `/api/objects/${encodeKey(key)}`;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
           });
           const actions = tr.querySelector('.actions');
           actions.querySelector('[data-act=download]').addEventListener('click', () => {
-            location.assign(`/api/objects/${encodeKey(key)}?dl=1`);
+            const a = document.createElement('a');
+            a.href = `/api/objects/${encodeKey(key)}?dl=1`;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
           });
           actions.querySelector('[data-act=share]').addEventListener('click', async () => {
             try {
