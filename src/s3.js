@@ -21,6 +21,8 @@ export function createS3(env) {
     },
     forcePathStyle: true,
     signatureVersion: 'v4',
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
   });
 }
 
