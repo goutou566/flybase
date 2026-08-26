@@ -57,10 +57,11 @@ async function handleApi(request, url, env) {
     return passkeyResponse;
   }
 
+  // [临时开放写权限] 原逻辑: 写方法需 verifySession。临时禁用登录验证，保留原代码以便恢复
   if (request.method === 'PUT' || request.method === 'DELETE' || request.method === 'POST') {
-    if (!(await verifySession(request, env))) {
-      return unauthorized();
-    }
+    // if (!(await verifySession(request, env))) {
+    //   return unauthorized();
+    // }
   }
 
   const multipartMatch = path.match(/^\/api\/multipart\/(.+)$/);
@@ -269,10 +270,11 @@ async function handlePasskeyRoutes(request, url, env) {
     return result.error ? json({ error: result.error }, result.status) : json(result);
   }
 
+  // [临时开放写权限] 原逻辑: 写操作需 verifySession。临时禁用登录验证，保留原代码以便恢复
   if (isWrite && path !== '/api/auth/login/options' && path !== '/api/auth/login/verify') {
-    if (!(await verifySession(request, env))) {
-      return unauthorized();
-    }
+    // if (!(await verifySession(request, env))) {
+    //   return unauthorized();
+    // }
   }
 
   if (path === '/api/auth/login/options' && request.method === 'GET') {

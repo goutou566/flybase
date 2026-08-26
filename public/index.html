@@ -324,8 +324,9 @@
     }
 
     function applyAdminUi() {
-      $('uploadBtn').style.display = state.admin ? '' : 'none';
-      $('passkeyBtn').style.display = state.admin ? 'none' : '';
+      // [临时开放] 上传按钮对所有人可见，原逻辑保留以便恢复
+      $('uploadBtn').style.display = ''; // state.admin ? '' : 'none'
+      $('passkeyBtn').style.display = 'none'; // state.admin ? 'none' : ''
       $('passkeyBtn').textContent = state.passkeyRegistered ? 'Passkey 登录' : '注册 Passkey';
       $('logoutBtn').style.display = state.admin ? '' : 'none';
       loadFiles();
