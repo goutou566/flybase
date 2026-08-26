@@ -562,7 +562,7 @@
           });
           const actions = tr.querySelector('.actions');
           actions.querySelector('[data-act=download]').addEventListener('click', () => {
-            startDownload(key, name, size);
+            startDownload(key, name, obj.size);
           });
           actions.querySelector('[data-act=share]').addEventListener('click', async () => {
             try {
