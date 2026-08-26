@@ -87,6 +87,9 @@ async function handleApi(request, url, env) {
   }
 
   if (rawKey.endsWith('/presign-delete')) {
+    if (!(await verifySession(request, env))) {
+      return unauthorized();
+    }
     const key = toEnvKey(rawKey.slice(0, -'/presign-delete'.length));
     try {
       const url2 = await presignDeleteObject(s3, bucket, key);
@@ -97,6 +100,9 @@ async function handleApi(request, url, env) {
   }
 
   if (rawKey.endsWith('/presign-put')) {
+    if (!(await verifySession(request, env))) {
+      return unauthorized();
+    }
     const key = toEnvKey(rawKey.slice(0, -'/presign-put'.length));
     try {
       const url2 = await presignPutObject(s3, bucket, key);
@@ -155,6 +161,13 @@ async function handleApi(request, url, env) {
 
 async function handleMultipart(request, url, env, s3, bucket, key) {
   const action = url.searchParams.get('action');
+
+  // 分片签名/管理类操作全部需要管理员会话（GET 形式的写操作入口）
+  if (action && action !== 'status') {
+    if (!(await verifySession(request, env))) {
+      return unauthorized();
+    }
+  }
 
   try {
     if (request.method === 'POST' && action === 'init') {
