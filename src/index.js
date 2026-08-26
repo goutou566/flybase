@@ -150,6 +150,27 @@ async function handleMultipart(request, url, env, s3, bucket, key) {
       return json({ key, uploadId, partNumber, presignedUrl });
     }
 
+    if (request.method === 'GET' && action === 'presign-batch') {
+      const uploadId = url.searchParams.get('uploadId');
+      const start = parseInt(url.searchParams.get('start'), 10);
+      let count = parseInt(url.searchParams.get('count'), 10);
+      if (!uploadId || !start || start < 1 || start > 10000) {
+        return json({ error: 'uploadId and valid start are required' }, 400);
+      }
+      if (!count || count < 1) count = 8;
+      if (count > 32) count = 32;
+      if (start + count - 1 > 10000) count = 10000 - start + 1;
+      const items = await Promise.all(
+        Array.from({ length: count }, (_, i) =>
+          presignUploadPart(s3, bucket, key, uploadId, start + i).then((presignedUrl) => ({
+            partNumber: start + i,
+            presignedUrl,
+          }))
+        )
+      );
+      return json({ key, uploadId, items });
+    }
+
     if (request.method === 'POST' && action === 'complete') {
       const body = await request.json();
       const { uploadId, parts } = body;

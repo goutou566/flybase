@@ -61,8 +61,19 @@ export async function getObject(s3, bucket, key) {
 }
 
 export async function deleteObject(s3, bucket, key) {
-  const command = new DeleteObjectCommand({ Bucket: bucket, Key: key });
-  return s3.send(command);
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const command = new DeleteObjectCommand({ Bucket: bucket, Key: key });
+      return await s3.send(command);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 1) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 export async function createShareUrl(s3, bucket, key, expiresInSeconds) {

@@ -562,12 +562,7 @@
           });
           const actions = tr.querySelector('.actions');
           actions.querySelector('[data-act=download]').addEventListener('click', () => {
-            const a = document.createElement('a');
-            a.href = `/api/objects/${encodeKey(key)}?dl=1`;
-            a.download = name;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
+            startDownload(key, name, size);
           });
           actions.querySelector('[data-act=share]').addEventListener('click', async () => {
             try {
@@ -588,8 +583,9 @@
                 if (!res.ok) throw new Error(await res.text());
                 toast('已删除');
                 loadFiles();
-              } catch {
-                toast('删除失败');
+              } catch (err) {
+                const detail = err && err.message ? err.message.slice(0, 60) : '';
+                toast(detail ? `删除失败: ${detail}` : '删除失败');
               }
             });
           }
@@ -642,6 +638,124 @@
       throw lastErr;
     }
 
+    // ---- 多线程下载 ----
+    const DL_MIN_SIZE = 8 * 1024 * 1024;   // 8MB 以上走多线程 Range 下载
+    const DL_MAX_CONNECTIONS = 16;
+    const DL_CHUNK_SIZE = 8 * 1024 * 1024; // 每个连接负责约 8MB
+
+    function showDownloadProgress(name, loaded, total, note) {
+      const box = $('progress');
+      const listBox = $('progressList');
+      box.classList.add('show');
+      let el = listBox.querySelector(`[data-dl="${CSS.escape(name)}"]`);
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'upload-item';
+        el.dataset.dl = name;
+        el.innerHTML = `
+          <div class="row">
+            <span class="fname"></span>
+            <span class="pct">0%</span>
+          </div>
+          <div class="bar"><div></div></div>`;
+        listBox.prepend(el);
+      }
+      const fill = el.querySelector('.bar > div');
+      const pct = el.querySelector('.pct');
+      if (note) {
+        pct.textContent = note;
+        return;
+      }
+      const p = total ? Math.round((loaded / total) * 100) : 0;
+      fill.style.width = `${p}%`;
+      pct.textContent = `${formatBytes(loaded)} / ${formatBytes(total)}`;
+      if (loaded >= total) {
+        pct.textContent = '完成';
+        pct.classList.add('ok');
+        setTimeout(() => {
+          el.remove();
+          if (!listBox.children.length) box.classList.remove('show');
+        }, 3000);
+      }
+    }
+
+    async function startDownload(key, name, size) {
+      if (size <= DL_MIN_SIZE) {
+        const a = document.createElement('a');
+        a.href = `/api/objects/${encodeKey(key)}?dl=1`;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
+      try {
+        showDownloadProgress(name, 0, size, '准备中...');
+        const res = await fetch(`/api/objects/${encodeKey(key)}/share?expires=3600`);
+        if (!res.ok) throw new Error(`获取直链失败 HTTP ${res.status}`);
+        const { shareUrl } = await res.json();
+
+        const chunkCount = Math.min(DL_MAX_CONNECTIONS, Math.ceil(size / DL_CHUNK_SIZE));
+        const perChunk = Math.ceil(size / chunkCount);
+        const buffers = new Array(chunkCount).fill(null);
+        let doneBytes = 0;
+
+        const fetchChunk = async (idx) => {
+          const start = idx * perChunk;
+          const end = Math.min(start + perChunk, size) - 1;
+          let lastErr;
+          for (let attempt = 0; attempt <= 3; attempt++) {
+            try {
+              const r = await fetch(shareUrl, { headers: { Range: `bytes=${start}-${end}` } });
+              if (!r.ok && r.status !== 206) throw new Error(`HTTP ${r.status}`);
+              const buf = await r.arrayBuffer();
+              buffers[idx] = buf;
+              doneBytes += buf.byteLength;
+              showDownloadProgress(name, doneBytes, size);
+              return;
+            } catch (err) {
+              lastErr = err;
+              if (attempt < 3) {
+                pushLog(`${name} 分块 ${idx + 1}/${chunkCount} 失败，重试: ${err.message}`);
+                await new Promise((rr) => setTimeout(rr, 1000 * Math.pow(2, attempt)));
+              }
+            }
+          }
+          throw lastErr;
+        };
+
+        const queue = Array.from({ length: chunkCount }, (_, i) => i);
+        await Promise.all(
+          Array.from({ length: Math.min(6, chunkCount) }, async () => {
+            while (queue.length) {
+              const idx = queue.shift();
+              await fetchChunk(idx);
+            }
+          })
+        );
+
+        const blob = new Blob(buffers);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        pushLog(`${name} 多线程下载完成（${chunkCount} 连接）`);
+      } catch (err) {
+        toast(`下载失败: ${(err.message || '未知错误').slice(0, 60)}`);
+        pushLog(`${name} 多线程下载失败: ${err.message}`);
+        const el = $('progressList').querySelector(`[data-dl="${CSS.escape(name)}"]`);
+        if (el) {
+          const pct = el.querySelector('.pct');
+          pct.textContent = '失败';
+          pct.classList.add('err');
+        }
+      }
+    }
+
     // ---- 失败日志 ----
     const uploadLogEntries = [];
 
@@ -681,7 +795,8 @@
 
     const MULTIPART_THRESHOLD = 8 * 1024 * 1024;  // 8MB 以上走分片直传（Worker 中转有体积/内存限制）
     const PART_SIZE = 8 * 1024 * 1024;            // 每片 8MB
-    const PART_CONCURRENCY = 2;
+    const PART_CONCURRENCY = 4;
+    const PRESIGN_BATCH = 16;                     // 批量预取签名数
 
     async function mpRequest(path, options = {}) {
       const headers = authHeaders(options.headers);
@@ -751,16 +866,54 @@
 
       const updateTotal = () => onProgress(completedBytes + partLoaded.reduce((a, b) => a + b, 0), file.size);
 
+      // 批量预取签名流水线：PUT 并发槽从 signQueue 取签名，队列低于水位时后台批量补货
+      const signQueue = [];
+      let nextSignPart = 1; // 1-based
+      let prefetching = null;
+
+      async function refillSignQueue() {
+        if (prefetching) return prefetching;
+        const need = Math.min(PRESIGN_BATCH, totalParts - nextSignPart + 1);
+        if (need <= 0) return;
+        prefetching = (async () => {
+          try {
+            const res = await mpRequest(
+              `/api/multipart/${encodeKey(key)}?action=presign-batch&uploadId=${encodeURIComponent(init.uploadId)}&start=${nextSignPart}&count=${need}`
+            );
+            for (const item of res.items) signQueue.push(item);
+            nextSignPart += res.items.length;
+          } catch (err) {
+            pushLog(`${file.name} 预取签名失败（第 ${nextSignPart} 片起）: ${err.message}`);
+          } finally {
+            prefetching = null;
+          }
+        })();
+        return prefetching;
+      }
+
+      async function takePresign() {
+        while (!signQueue.length && nextSignPart <= totalParts) {
+          await refillSignQueue();
+          if (prefetching) await prefetching;
+        }
+        return signQueue.shift();
+      }
+
       const worker = async (queue) => {
         while (queue.length) {
           const i = queue.shift();
           const start = i * PART_SIZE;
           const blob = file.slice(start, Math.min(start + PART_SIZE, file.size));
           try {
-            const { presignedUrl } = await mpRequest(
-              `/api/multipart/${encodeKey(key)}?action=presign&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${i + 1}`
-            );
-            const etag = await uploadPartWithRetry(presignedUrl, blob, (loaded) => {
+            const signed = await takePresign();
+            if (!signed || signed.partNumber !== i + 1) {
+              // 兜底：预取错位或缺失时单独补签该分片
+              const r = await mpRequest(
+                `/api/multipart/${encodeKey(key)}?action=presign&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${i + 1}`
+              );
+              signed = { partNumber: i + 1, presignedUrl: r.presignedUrl };
+            }
+            const etag = await uploadPartWithRetry(signed.presignedUrl, blob, (loaded) => {
               partLoaded[i] = loaded;
               updateTotal();
             }, 4, `${file.name} 第 ${i + 1}/${totalParts} 片`);
@@ -769,6 +922,7 @@
             completedBytes += blob.size;
             partLoaded[i] = 0;
             updateTotal();
+            refillSignQueue();
           } catch (err) {
             pushLog(`${file.name} 第 ${i + 1} 片最终失败，已中止整个上传: ${err.message}`);
             if (signalRef.abort) await signalRef.abort();
