@@ -184,7 +184,7 @@ async function handleMultipart(request, url, env, s3, bucket, key) {
         return json({ error: 'uploadId and valid start are required' }, 400);
       }
       if (!count || count < 1) count = 8;
-      if (count > 32) count = 32;
+      if (count > 64) count = 64;
       if (start + count - 1 > 10000) count = 10000 - start + 1;
       const items = await Promise.all(
         Array.from({ length: count }, (_, i) =>

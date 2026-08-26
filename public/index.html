@@ -808,18 +808,54 @@
     const MULTIPART_THRESHOLD = 8 * 1024 * 1024;  // 8MB 以上走分片直传（Worker 中转有体积/内存限制）
     const PART_SIZE = 8 * 1024 * 1024;            // 每片 8MB
     const PART_CONCURRENCY = 4;
-    const PRESIGN_BATCH = 16;                     // 批量预取签名数
+    const PRESIGN_BATCH = 64;                     // 批量预取签名数（一次签完常见文件全部分片，减少 API 往返）
 
-    async function mpRequest(path, options = {}) {
-      const headers = authHeaders(options.headers);
-      const res = await fetch(path, { ...options, headers });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401) {
-        handleAuthLost();
-        throw new Error('登录已过期');
+    // CF 挑战页特征：命中时给出可操作的错误提示
+    const CHALLENGE_MARKERS = ['Just a moment', 'cf-challenge', 'challenge-platform', 'Attention Required'];
+
+    async function describeApiError(res) {
+      let body = '';
+      try { body = await res.text(); } catch {}
+      if (CHALLENGE_MARKERS.some((m) => body.includes(m))) {
+        return `被 Cloudflare 拦截（HTTP ${res.status}），请刷新页面后重试`;
       }
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      return data;
+      try {
+        const data = JSON.parse(body);
+        if (data && data.error) return data.error;
+      } catch {}
+      return `HTTP ${res.status}`;
+    }
+
+    async function mpRequest(path, options = {}, retries = 2) {
+      const headers = authHeaders(options.headers);
+      let lastErr;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        let res;
+        try {
+          res = await fetch(path, { ...options, headers });
+        } catch (err) {
+          lastErr = new Error(`网络错误: ${err.message}`);
+          if (attempt < retries) {
+            await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+            continue;
+          }
+          throw lastErr;
+        }
+        if (res.status === 401) {
+          handleAuthLost();
+          throw new Error('登录已过期');
+        }
+        if (res.ok) return res.json().catch(() => ({}));
+        lastErr = new Error(await describeApiError(res));
+        const retriable = res.status === 403 || res.status === 429 || res.status >= 500;
+        if (retriable && attempt < retries) {
+          pushLog(`请求被拒（${lastErr.message}），${2 * (attempt + 1)}s 后自动重试`);
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          continue;
+        }
+        throw lastErr;
+      }
+      throw lastErr;
     }
 
     async function uploadPartWithRetry(presignPath, blob, onPartProgress, maxRetries = 4, label = '') {
