@@ -741,15 +741,8 @@
           })
         );
 
-        const blob = new Blob(buffers);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        const blob = new Blob(buffers, { type: mimeOf(name) });
+        await saveBlobAs(blob, name);
         pushLog(`${name} 多线程下载完成（${chunkCount} 连接）`);
       } catch (err) {
         toast(`下载失败: ${(err.message || '未知错误').slice(0, 60)}`);
@@ -1117,6 +1110,70 @@
       if (e.target.files.length) uploadFiles(e.target.files);
       e.target.value = '';
     });
+
+    // ---- SW 下载桥：让浏览器原生下载器接管文件名（Safari 对异步 blob URL 会忽略 download 属性并按 text/html 另存为 .html）----
+    const swReady = navigator.serviceWorker
+      .register('/sw.js')
+      .then(() => navigator.serviceWorker.ready)
+      .catch(() => null);
+
+    function mimeOf(name) {
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      const map = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+        webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf',
+        txt: 'text/plain', md: 'text/plain', log: 'text/plain', csv: 'text/plain',
+        json: 'application/json', zip: 'application/zip',
+        exe: 'application/vnd.microsoft.portable-executable',
+        msi: 'application/x-msdownload', apk: 'application/vnd.android.package-archive',
+        pkg: 'application/x-newton-compatible-pkg', dmg: 'application/x-apple-diskimage',
+        mp4: 'video/mp4', mp3: 'audio/mpeg',
+      };
+      return map[ext] || 'application/octet-stream';
+    }
+
+    async function saveBlobAs(blob, filename) {
+      try {
+        if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+          const token = crypto.randomUUID();
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('SW 响应超时')), 8000);
+            navigator.serviceWorker.addEventListener('message', function onMsg(e) {
+              if (e.data && e.data.type === 'download-ready' && e.data.token === token) {
+                navigator.serviceWorker.removeEventListener('message', onMsg);
+                clearTimeout(timer);
+                resolve();
+              }
+            });
+            navigator.serviceWorker.controller.postMessage({
+              type: 'download',
+              token,
+              blob,
+              filename,
+              mime: mimeOf(filename),
+              size: blob.size,
+            });
+          });
+          const iframe = document.createElement('iframe');
+          iframe.style.display = 'none';
+          iframe.src = `/__download/${token}`;
+          document.body.appendChild(iframe);
+          setTimeout(() => iframe.remove(), 120000);
+          return;
+        }
+      } catch (err) {
+        pushLog(`SW 下载桥失败，回退 blob 方式: ${err.message}`);
+      }
+      // 回退路径
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
 
     async function init() {
       await fetchPasskeyStatus();
