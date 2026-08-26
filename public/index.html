@@ -688,13 +688,25 @@
 
     async function startDownload(key, name, size) {
       if (size <= DL_MIN_SIZE) {
-        const a = document.createElement('a');
-        a.href = `/api/objects/${encodeKey(key)}?dl=1`;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        return;
+        // 小文件：单次拉取进内存，仍经 SW 桥保存（避免导航式下载被 CF 挑战页污染）
+        try {
+          showDownloadProgress(name, 0, size, '下载中...');
+          const res = await fetch(`/api/objects/${encodeKey(key)}?dl=1`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          if ((res.headers.get('content-type') || '').includes('text/html')) {
+            throw new Error('收到挑战页而非文件');
+          }
+          const blob = await res.blob();
+          await saveBlobAs(blob, name);
+          showDownloadProgress(name, size, size);
+          return;
+        } catch (err) {
+          toast(`下载失败: ${(err.message || '未知错误').slice(0, 60)}`);
+          pushLog(`${name} 下载失败: ${err.message}`);
+          const el = $('progressList').querySelector(`[data-dl="${CSS.escape(name)}"]`);
+          if (el) el.querySelector('.pct').textContent = '失败';
+          return;
+        }
       }
       try {
         showDownloadProgress(name, 0, size, '准备中...');
