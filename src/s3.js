@@ -84,6 +84,46 @@ export async function createShareUrl(s3, bucket, key, expiresInSeconds) {
   return url;
 }
 
+export async function presignPutObject(s3, bucket, key) {
+  const command = new PutObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(s3, command, { expiresIn: 6 * 3600 });
+}
+
+export async function presignCreateMultipart(s3, bucket, key) {
+  const command = new CreateMultipartUploadCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(s3, command, { expiresIn: 6 * 3600 });
+}
+
+export async function presignCompleteMultipart(s3, bucket, key, uploadId) {
+  const command = new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId });
+  return getSignedUrl(s3, command, { expiresIn: 6 * 3600 });
+}
+
+export async function presignAbortMultipart(s3, bucket, key, uploadId) {
+  const command = new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId });
+  return getSignedUrl(s3, command, { expiresIn: 6 * 3600 });
+}
+
+export async function presignDeleteObject(s3, bucket, key) {
+  const command = new DeleteObjectCommand({ Bucket: bucket, Key: key });
+  return getSignedUrl(s3, command, { expiresIn: 1 * 3600 });
+}
+
+const MIME_MAP = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif', ico: 'image/x-icon',
+  bmp: 'image/bmp',
+  pdf: 'application/pdf',
+  txt: 'text/plain', md: 'text/plain', log: 'text/plain', csv: 'text/plain',
+  json: 'application/json', xml: 'application/xml', html: 'text/html',
+  htm: 'text/html', js: 'text/javascript', css: 'text/css',
+};
+
+export function mimeFromKey(key) {
+  const ext = (key.split('.').pop() || '').toLowerCase();
+  return MIME_MAP[ext] || '';
+}
+
 export async function createMultipartUpload(s3, bucket, key, contentType) {
   const command = new CreateMultipartUploadCommand({
     Bucket: bucket,

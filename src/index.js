@@ -7,8 +7,14 @@ import {
   createShareUrl,
   createMultipartUpload,
   presignUploadPart,
+  presignPutObject,
+  presignCreateMultipart,
+  presignCompleteMultipart,
+  presignAbortMultipart,
+  presignDeleteObject,
   completeMultipartUpload,
   abortMultipartUpload,
+  mimeFromKey,
   toEnvKey,
 } from './s3.js';
 import {
@@ -80,6 +86,26 @@ async function handleApi(request, url, env) {
     }
   }
 
+  if (rawKey.endsWith('/presign-delete')) {
+    const key = toEnvKey(rawKey.slice(0, -'/presign-delete'.length));
+    try {
+      const url2 = await presignDeleteObject(s3, bucket, key);
+      return json({ key, presignedUrl: url2 });
+    } catch (err) {
+      return serverError(err);
+    }
+  }
+
+  if (rawKey.endsWith('/presign-put')) {
+    const key = toEnvKey(rawKey.slice(0, -'/presign-put'.length));
+    try {
+      const url2 = await presignPutObject(s3, bucket, key);
+      return json({ key, presignedUrl: url2 });
+    } catch (err) {
+      return serverError(err);
+    }
+  }
+
   const key = toEnvKey(rawKey);
 
   switch (request.method) {
@@ -98,9 +124,9 @@ async function handleApi(request, url, env) {
         const forceDownload = url.searchParams.has('dl');
         const obj = await getObject(s3, bucket, key);
         const headers = new Headers();
-        headers.set('Content-Type', obj.ContentType || 'application/octet-stream');
+        const type = obj.ContentType || mimeFromKey(key) || 'application/octet-stream';
+        headers.set('Content-Type', type);
         const name = key.split('/').pop() || 'file';
-        const type = obj.ContentType || '';
         const inlinePreview = !forceDownload && /^(image\/|application\/pdf|text\/)/.test(type);
         headers.set(
           'Content-Disposition',
@@ -169,6 +195,29 @@ async function handleMultipart(request, url, env, s3, bucket, key) {
         )
       );
       return json({ key, uploadId, items });
+    }
+
+    if (request.method === 'GET' && action === 'presign-init') {
+      const url2 = await presignCreateMultipart(s3, bucket, key);
+      return json({ key, presignedUrl: url2 });
+    }
+
+    if (request.method === 'GET' && action === 'presign-complete') {
+      const uploadId = url.searchParams.get('uploadId');
+      if (!uploadId) {
+        return json({ error: 'uploadId required' }, 400);
+      }
+      const url2 = await presignCompleteMultipart(s3, bucket, key, uploadId);
+      return json({ key, uploadId, presignedUrl: url2 });
+    }
+
+    if (request.method === 'GET' && action === 'presign-abort') {
+      const uploadId = url.searchParams.get('uploadId');
+      if (!uploadId) {
+        return json({ error: 'uploadId required' }, 400);
+      }
+      const url2 = await presignAbortMultipart(s3, bucket, key, uploadId);
+      return json({ key, uploadId, presignedUrl: url2 });
     }
 
     if (request.method === 'POST' && action === 'complete') {

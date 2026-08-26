@@ -579,8 +579,14 @@
             delBtn.addEventListener('click', async () => {
               if (!confirm(`确认删除「${name}」？`)) return;
               try {
-                const res = await authedFetch(`/api/objects/${encodeKey(key)}`, { method: 'DELETE' });
-                if (!res.ok) throw new Error(await res.text());
+                // 预签名直删 Filebase：写请求绕开 CF 对 API 的挑战拦截
+                const res = await authedFetch(`/api/objects/${encodeKey(key)}/presign-delete`);
+                if (!res.ok) throw new Error(`获取删除签名失败 HTTP ${res.status}`);
+                const { presignedUrl } = await res.json();
+                const del = await fetch(presignedUrl, { method: 'DELETE' });
+                if (!del.ok && del.status !== 204) {
+                  throw new Error(`HTTP ${del.status}`);
+                }
                 toast('已删除');
                 loadFiles();
               } catch (err) {
@@ -597,12 +603,13 @@
     }
 
     async function uploadOne(file, key, onProgress) {
+      // 先向 Worker 要预签名 URL（GET，可过 CF 挑战），再直传 Filebase（绕开 CF 对写请求的拦截）
+      const res = await authedFetch(`/api/objects/${encodeKey(key)}/presign-put`);
+      if (!res.ok) throw new Error(`获取直传签名失败 HTTP ${res.status}`);
+      const { presignedUrl } = await res.json();
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('PUT', `/api/objects/${encodeKey(key)}`);
-        if (state.admin && state.session) {
-          xhr.setRequestHeader('Authorization', 'Bearer ' + state.session);
-        }
+        xhr.open('PUT', presignedUrl);
         xhr.upload.addEventListener('progress', (e) => {
           if (e.lengthComputable) onProgress(e.loaded, e.total);
         });
@@ -845,17 +852,23 @@
     }
 
     async function uploadMultipart(file, key, onProgress, onNote, signalRef) {
-      const init = await mpRequest(`/api/multipart/${encodeKey(key)}?action=init`, {
-        method: 'POST',
-        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      // init：拿预签名 CreateMultipartUpload URL，浏览器直发 POST 到 Filebase，从 XML 解析 uploadId
+      const initRes = await mpRequest(`/api/multipart/${encodeKey(key)}?action=presign-init`);
+      const xmlText = await fetch(initRes.presignedUrl, { method: 'POST' }).then(async (r) => {
+        if (!r.ok) throw new Error(`初始化分片失败 HTTP ${r.status}`);
+        return r.text();
       });
+      const initDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
+      const uploadId = initDoc.querySelector('UploadId')?.textContent;
+      if (!uploadId) throw new Error('初始化分片失败: 无 UploadId');
+      pushLog(`${file.name} 分片上传已初始化（直连 Filebase）`);
+
       signalRef.abort = async () => {
         try {
-          await mpRequest(`/api/multipart/${encodeKey(key)}?action=abort`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uploadId: init.uploadId }),
-          });
+          const a = await mpRequest(
+            `/api/multipart/${encodeKey(key)}?action=presign-abort&uploadId=${encodeURIComponent(uploadId)}`
+          );
+          await fetch(a.presignedUrl, { method: 'POST' });
         } catch {}
       };
 
@@ -878,7 +891,7 @@
         prefetching = (async () => {
           try {
             const res = await mpRequest(
-              `/api/multipart/${encodeKey(key)}?action=presign-batch&uploadId=${encodeURIComponent(init.uploadId)}&start=${nextSignPart}&count=${need}`
+              `/api/multipart/${encodeKey(key)}?action=presign-batch&uploadId=${encodeURIComponent(uploadId)}&start=${nextSignPart}&count=${need}`
             );
             for (const item of res.items) signQueue.push(item);
             nextSignPart += res.items.length;
@@ -909,7 +922,7 @@
             if (!signed || signed.partNumber !== i + 1) {
               // 兜底：预取错位或缺失时单独补签该分片
               const r = await mpRequest(
-                `/api/multipart/${encodeKey(key)}?action=presign&uploadId=${encodeURIComponent(init.uploadId)}&partNumber=${i + 1}`
+                `/api/multipart/${encodeKey(key)}?action=presign&uploadId=${encodeURIComponent(uploadId)}&partNumber=${i + 1}`
               );
               signed = { partNumber: i + 1, presignedUrl: r.presignedUrl };
             }
@@ -937,14 +950,26 @@
       );
 
       onNote?.('正在合并分片...');
-      await mpRequest(`/api/multipart/${encodeKey(key)}?action=complete`, {
+      const okParts = parts.filter(Boolean).sort((a, b) => a.partNumber - b.partNumber);
+      const completeXml =
+        '<CompleteMultipartUpload>' +
+        okParts
+          .map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${p.etag}</ETag></Part>`)
+          .join('') +
+        '</CompleteMultipartUpload>';
+      const c = await mpRequest(
+        `/api/multipart/${encodeKey(key)}?action=presign-complete&uploadId=${encodeURIComponent(uploadId)}`
+      );
+      const cRes = await fetch(c.presignedUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uploadId: init.uploadId,
-          parts: parts.filter(Boolean),
-        }),
+        headers: { 'Content-Type': 'application/xml' },
+        body: completeXml,
       });
+      if (!cRes.ok) throw new Error(`合并分片失败 HTTP ${cRes.status}`);
+      const cText = await cRes.text();
+      if (/<Error>/i.test(cText) || /<Code>/i.test(cText)) {
+        throw new Error(`合并分片失败: ${cText.slice(0, 200)}`);
+      }
     }
 
     async function uploadFiles(files) {
